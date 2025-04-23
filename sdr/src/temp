@@ -1,0 +1,146 @@
+// Parametric intersection
+                let t = (x_line - edge.start.0) / (edge.end.0 - edge.start.0);
+                let y_intersect = edge.start.1 + t * (edge.end.1 - edge.start.1);
+                if t >= 0.0 && t <= 1.0 {
+                    if let Some(last_y_val) = last_intersection {
+                        if last_y_val != y_intersect {
+                            if last_y_val < y_intersect{
+                                intersections.push(( y_intersect.abs(), last_y_val.abs()))
+                            }
+                            else {
+                                intersections.push((last_y_val.abs(), y_intersect.abs()))
+                            }
+                            last_intersection = None; // Reset for next pair
+                        }
+                    } else {
+                        last_intersection = Some(y_intersect);
+                    }
+                }
+
+            }
+
+            //Unpaired intersection
+            if let Some(last_y_val) = last_intersection{
+                intersections.push((last_y_val.abs(), last_y_val.abs()));
+            }
+            // Sort intersections by the y-value (first element of the tuple)
+            intersections.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+             // Merge consecutive or adjacent intersections with the same or overlapping y-values
+            let mut current_intersection = None;
+            let mut current_end = None;
+            
+            for intersection in intersections {
+                if let Some((start, end)) = current_intersection {
+                    // Check if intervals are adjacent or overlapping
+                    if intersection.0 <= end {
+                        // Merge intervals by extending the end if necessary
+                        current_end = Some(intersection.1.max(end));
+                    } else {
+                        // Add the merged interval to the result
+                        merged_intersections.push(Interval::new(start, current_end.unwrap()));
+                        current_intersection = None;
+                        current_end = None;
+                    }
+                } else {
+                    current_intersection = Some(intersection);
+                    current_end = Some(intersection.1);
+                }
+            }
+
+            if let Some((start, _end)) = current_intersection {
+                merged_intersections.push(Interval::new(start, current_end.unwrap()));
+            }
+
+            //Extension algorithm
+            for (i,vertex) in convex.iter().enumerate(){
+                let current = first_quadrant.get_point(*vertex);
+                if current.0 > prev_line && current.0 < next_line && 
+                (current.0 >= x_line - EPSILON && current.0 <= x_line + EPSILON) {
+                    println!("Possible Extension needed at {:?}, prev {:?}, next {:?}, x_line {:?}", vertex, prev_line, next_line, x_line);
+                    let prev = if *vertex == 0 {&first_quadrant.number_of_points() - 1} else {vertex - 1};
+                    let next = if *vertex == &first_quadrant.number_of_points() - 1 {0} else {vertex + 1};
+
+                    if x_line > rect.x_max {
+                        if current.0 == first_quadrant.get_point(next).0{
+                            merged_intersections.push(Interval::new_with_orientation(current.1.abs(), first_quadrant.get_point(next).1.abs(), false));
+                        }
+                        else if first_quadrant.get_point(prev).0 == current.0{ 
+                            continue;
+                        }
+                        else{
+                            let start = self.calculate_intersection(prev_line, current, first_quadrant.get_point(prev));
+                            let end = self.calculate_intersection(prev_line, current, first_quadrant.get_point(next));
+                            merged_intersections.push(Interval::new_with_orientation(start.abs(), end.abs(), false));
+                        }
+                    }
+                    else if current.1 <= first_quadrant.get_point(next).1 && current.1 <= first_quadrant.get_point(prev).1{
+                        println!("TOP");
+                        // if let Some(first) = merged_intersections.first() {
+                        //     if first.end == first.start {
+                        //         continue;
+                        //     }
+                        //     if current.0 > x_line{
+                        //         merged_intersections.push(Interval::new_with_orientation(current.1.abs(), first.start.abs(), false));
+                        //     }
+                        //     else{
+                        //         merged_intersections.push(Interval::new_with_orientation(current.1.abs(), first.start.abs(), true));
+                        //     }
+                            
+                        // }
+                    }
+                    else if current.1 >= first_quadrant.get_point(next).1 && current.1 >= first_quadrant.get_point(prev).1{
+                        println!("BOTTOM");
+                        // if let Some(last) = merged_intersections.last() {
+                        //     if last.end == last.start {
+                        //         continue;
+                        //     }
+                        //     if current.0 > x_line{
+                        //         merged_intersections.push(Interval::new_with_orientation(last.end, current.1, false));
+                        //     }
+                        //     else{
+                        //         merged_intersections.push(Interval::new_with_orientation(last.end, current.1, true));
+                        //     }
+                            
+                        // }
+                    }
+                    else if current.0 >= first_quadrant.get_point(prev).0 && current.0 >= first_quadrant.get_point(next).0{
+                        // println!("KIKI");
+                        // if x_line > rect.x_max{
+                        //     if current.0 == first_quadrant.get_point(next).0{
+                        //         merged_intersections.push(Interval::new_with_orientation(current.1, first_quadrant.get_point(next).1, true));
+                        //     }
+                        //     else if first_quadrant.get_point(prev).0 == current.0{ 
+                        //         continue;
+                        //     }
+                        //     else{
+                        //         let start = self.calculate_intersection(prev_line, current, first_quadrant.get_point(prev));
+                        //         let end = self.calculate_intersection(prev_line, current, first_quadrant.get_point(next));
+                        //         merged_intersections.push(Interval::new_with_orientation(start, end, true));
+                        //     }
+                        // }
+                    }
+                    else{   
+                        // println!("Last Else");
+                        // if first_quadrant.get_point(next).1 < current.1{
+                        //     if let Some(last) = merged_intersections.last() {
+                        //         if current.0 > x_line{
+                        //             merged_intersections.push(Interval::new_with_orientation(last.end, current.1.max(last.end), false));
+                        //         }
+                        //         else{
+                        //             merged_intersections.push(Interval::new_with_orientation(last.end, current.1.max(last.end), true));
+                        //         }
+                        //     }
+                        // }
+                        // else{
+                        //     if let Some(first) = merged_intersections.first() {
+                        //         if current.0 > x_line{
+                        //             merged_intersections.push(Interval::new_with_orientation(current.1.min(first.start), first.start, false));
+                        //         }
+                        //         else{
+                        //             merged_intersections.push(Interval::new_with_orientation(current.1.min(first.start), first.start, true));
+                        //         }
+                        //     }
+                        // }
+                    }
+
+                }
