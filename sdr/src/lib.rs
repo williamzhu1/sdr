@@ -1,3 +1,4 @@
+// #![feature(portable_simd)]
 use std::time::Instant;
 
 use once_cell::sync::Lazy;

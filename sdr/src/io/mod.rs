@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-use log::{info, log, Level, LevelFilter};
+use log::{log, Level, LevelFilter};
 use svg::Document;
 
 use jagua_rs::io::json_instance::JsonInstance;

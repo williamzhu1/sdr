@@ -5,8 +5,6 @@ edition = "2021"
 
 [dependencies]
 jagua-rs = { version = "0.2.1"}
-rand = { version = "0.8.5", features = [ "small_rng" ] }
-rand_distr = "0.4.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 once_cell = { version = "1.19.0", features = [] }
@@ -35,3 +33,19 @@ criterion = "0.5.1"
 
 [profile.test]
 inherits = "release"
+
+[[bench]]
+name = "benches"
+harness = false
+
+[profile.release]
+# debug = true
+# target-feature = "+avx2"
+target-cpu = "native"
+# RUSTFLAGS = "-C target-cpu=x86-64-v4 -C target-feature=+avx2"
+opt-level = 3
+# lto = true
+# codegen-units = 1
+
+[features]
+use_simd = []

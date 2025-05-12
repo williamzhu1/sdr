@@ -1,190 +1,333 @@
-use std::f32::EPSILON;
+// use std::arch::x86_64::__m512;
+// // use std::simd::{f32x16, mask32x16, Simd};
+use rayon::prelude::*;
 
-use jagua_rs::geometry::transformation::Transformation;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
+
+use jagua_rs::{entities::item, fsize, geometry::transformation::Transformation};
 use ordered_float::Float;
+pub const EPSILON:fsize = 0.000001;
 
+static OVERLAPS_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Debug)]
+// Function to get the current count
+pub fn get_overlaps_count() -> usize {
+    OVERLAPS_COUNTER.load(Ordering::Relaxed)
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Interval{
-    pub start: f32,
-    pub end: f32,
+    pub start: fsize,
+    pub end: fsize,
     pub orientation: Option<bool>,
-}
-#[derive(Debug)]
-pub struct DiscreteLine{
-    pub id: usize,
-    pub occupied: Vec<Interval>
+    total_space: fsize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct DiscreteLine{
+    pub occupied: Vec<Interval>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscreteObject{
+    pub id: usize,
+    pub lines: Vec<DiscreteLine>,
+    pub position: (usize, fsize),
+}
+
+#[derive(Debug, Clone)]
 pub struct DiscreteStrip{
     pub lines: Vec<DiscreteLine>
 }
+
 impl Interval{
-    pub fn new(start: f32, end: f32) -> Self {
+    
+    pub fn new(start: fsize, end: fsize) -> Self {
         Interval {
             start,
             end,
             orientation: None,
+            total_space: end - start,
         }
     }
-    pub fn new_with_orientation(start: f32, end: f32, orientation: bool) -> Self {
+
+    pub fn new_with_orientation(start: fsize, end: fsize, orientation: bool) -> Self {
         Interval {
             start,
             end,
             orientation: Some(orientation),
+            total_space: end - start,
         }
     }
-    // Check if two intervals overlap
-    pub fn overlaps(&self, other: &Interval) -> bool {
+
+    #[inline(always)]
+    pub fn overlaps(&self, other: &Interval) -> fsize {
+        OVERLAPS_COUNTER.fetch_add(1, Ordering::Relaxed);
+        // Optimize spatial overlap check
+        let spatial_overlap = if self.end == self.start || other.start == other.end {
+            (self.end.min(other.end) - self.start.max(other.start)) > -EPSILON
+        } else {
+            (self.end.min(other.end) - self.start.max(other.start)) > EPSILON
+        };
+        
+        if !spatial_overlap {
+            return 0.0;
+        }
+        
+        // If there is spatial overlap, check orientations
         match (self.orientation, other.orientation) {
             (Some(self_orient), Some(other_orient)) => {
-                // If orientations are different, they can coexist (no overlap)
                 if self_orient != other_orient {
-                    return false;
+                    return 0.0;
                 }
-                // Same orientation continues to spatial check
-            },
-            // If either doesn't have orientation info, proceed to spatial check
+            }
             _ => {}
         }
-        return self.start.max(other.start) <= self.end.min(other.end)
+        self.end - other.start 
     }
-     // Compute required shift to eliminate overlap
-    pub fn shift_required(&self, other: &Interval) -> f32 {
-        self.end - other.start + EPSILON
-    }
-    /// Create a new interval shifted by an offset
-    pub fn shifted(&self, offset: f32) -> Interval {
-        Interval::new(self.start + offset, self.end + offset)
+
+    #[inline(always)]
+    pub fn shifted(&self, offset: &fsize) -> Interval {
+        Interval {
+            start: self.start + offset,
+            end: self.end + offset,
+            orientation: self.orientation,
+            total_space: self.total_space,
+        }
     }
 }
 
 impl DiscreteLine {
-    pub fn new(id:usize) -> Self {
+    
+    pub fn new() -> Self {
         DiscreteLine{
-        id,
         occupied: Vec::new()
         }
     }
+    
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.occupied.is_empty()
     }
-    pub fn find_first_available_position(&self, height: f32, incoming_line: &DiscreteLine) -> Option<f32> {
-        // Check if the line is valid
-        if self.occupied.is_empty() {
-            return Some(0.0);
+
+    #[inline(always)]
+    pub fn add_interval(&mut self, interval: Interval) {
+        // Find insertion point to maintain sorted order by start position
+        let pos = match self.occupied.binary_search_by(|x| {
+            match x.start.partial_cmp(&interval.start) {
+                Some(std::cmp::Ordering::Equal) => {
+                    // If starts are equal, compare by end 
+                    x.end.partial_cmp(&interval.end).unwrap_or(std::cmp::Ordering::Equal)
+                },
+                Some(order) => order,
+                None => std::cmp::Ordering::Equal
+            }
+        }) {
+            Ok(i) => i,
+            Err(i) => i,
+        };
+        
+        // Insert at the correct position
+        self.occupied.insert(pos, interval);
+    }
+
+    #[inline(always)]
+    pub fn space(&self) -> fsize {
+        self.occupied.iter().map(|interval| interval.total_space).sum()
+    }
+
+    #[inline(always)]
+    pub fn free_space(&self, height: fsize) -> fsize {
+        height - self.space()
+    }
+
+    #[inline(always)]
+    pub fn check_at(&self, height: &fsize, incoming_line: &DiscreteLine, offshoot: &fsize) -> Option<fsize>{
+
+        let mut max_shift_needed = 0.0;
+
+        // Sort incoming intervals by start position
+        let mut search_idx = 0; // Start at the beginning
+        
+        for incoming_interval in &incoming_line.occupied {
+            let shifted_interval = incoming_interval.shifted(offshoot);
+            
+            // Line height check
+            if shifted_interval.end > *height + EPSILON{
+                return None;
+            }
+            
+            // Skip intervals until we find potential overlaps
+            while search_idx < self.occupied.len() && self.occupied[search_idx].end <= shifted_interval.start {
+                search_idx += 1;
+            }
+            
+            // Check from this position forward
+            let mut i = search_idx;
+            while i < self.occupied.len() {
+                let current = &self.occupied[i];
+                if current.start > shifted_interval.end {
+                    break;
+                }
+                
+                let shift = current.overlaps(&shifted_interval);
+                if shift > EPSILON {
+                    max_shift_needed = max_shift_needed.max(shift);
+                }
+                i += 1;
+            }
+        }  
+        
+        // Final height check with calculated shift
+        for interval in &incoming_line.occupied {
+            if interval.end + offshoot + max_shift_needed > *height + EPSILON{
+                return None;
+            }
         }
         
-        if &self.occupied.first().unwrap().start >= &incoming_line.occupied.last().unwrap().start{
-            return Some(0.0);
-        }
-        let mut total_shift = 0.0;
-
-        for segment in &self.occupied {
-            // Only check segments that overlap with the movable segment
-            if segment.overlaps(incoming_line.occupied.last().unwrap()) {
-                let shift = segment.shift_required(incoming_line.occupied.last().unwrap());
-                total_shift = total_shift.max(shift);
-                
-                // Check if this shift would exceed height
-                if total_shift + incoming_line.occupied.last().unwrap().end > height {
-                    return None;
-                }
-            }
-        }
-        Some(total_shift)
+        Some(max_shift_needed)
     }
 
-    pub fn check_at(&self, height: f32, incoming_line: &DiscreteLine, offshoot: f32) -> Option<f32>{
-        // Shift incoming line's intervals
-        let last_interval = match incoming_line.occupied.last() {
-            Some(interval) => interval.shifted(offshoot),
-            None => return Some(0.0), // No segments in incoming line
-        };
-        // Check height constraint
-        if last_interval.end > height {
-            return None;
-        }
-        // overlap check
-        for current_interval in &self.occupied {
-            if current_interval.overlaps(&last_interval) {
-                let shift_needed = current_interval.shift_required(&last_interval);
-                log::info!("please shift {:?}, {:?}", current_interval, &last_interval);
-                if shift_needed > EPSILON {
-                    return Some(shift_needed);
-                }                
-            }
-        }
-        Some(0.0)
-    }
+    
 }
 
 impl DiscreteStrip {
-    pub fn get_next_id(&self) -> usize {
-        self.lines.last().map_or(0, |last_line| last_line.id + 1)
-    }
-    pub fn try_fit_segments(&mut self, segments: Vec<DiscreteLine>, height: f32, resolution: f32) -> Option<Transformation>{
-        log::info!("Height: {:?}, Fitting segments {:?}", height, segments);
-        let first = &segments[0];
-        let mut final_offshot = 0.0;
-        
-            'outer: for line in &mut self.lines.iter() {
-                if let Some(offshoot) = line.find_first_available_position(height, first) {
-                    let mut stack: Vec<f32> = Vec::new();
-                    stack.push(0.0);
-                    let i0: usize = line.id;
-                    'stacked: while !stack.is_empty() {
-                        let mut i: usize = line.id;
-                        let mut current_id = 0;
-                        log::info!("i0: {:?}, offset", i0);
-                        for segment in segments.iter() {
-                            if segment.id != current_id {
-                                i += 1;
-                                current_id = segment.id;
-                            }
-                            if i >= self.lines.len() {
-                                break 'outer; // Or handle this case differently
-                            }
-                            match self.lines[i].check_at(height, segment, offshoot + stack[0]) {
-                                // If check_at returns None, the segment cannot fit, so continue the outer loop.
-                                None => {
-                                    log::info!("Segment {:?} does not fit at offset {:?}", segment, offshoot);
-                                    stack.pop();
-                                    continue 'outer;
-                                },
-                                
-                                // If check_at returns 0.0, the segment fits without shift, so continue to the next segment.
-                                Some(0.0) => {
-                                    log::info!("Segment {:?} fits without shift", segment);                             
-                                },
 
-                                // If check_at returns a non-zero shift value, we need to apply the shift.
-                                Some(shift) => {
-                                    if shift > EPSILON {
-                                        log::info!("Segment {:?} requires a shift of {:?}", segment, shift);
-                                        stack.insert(0, shift + stack[0]);
-                                        stack.pop();
-                                        continue 'stacked;
-                                    }
-                                    log::info!("Segment {:?} EPSILON", segment);
-                                }
-                            }
+    pub fn get_next_id(&self) -> usize {
+        self.lines.len() + 1
+    }
+
+
+    pub fn try_fit_segments(&mut self, polygon_sets: &Vec<&Vec<DiscreteLine>>, height: &fsize, resolution: &fsize, amount: &isize, item_id: &usize) -> Vec<(Transformation, usize)> {
+        if polygon_sets.is_empty() {
+            return Vec::new();
+        }
+        
+        self.check_polygon(polygon_sets, height, resolution, amount, item_id)
+    }
+
+    pub fn check_polygon(&mut self, polygon_sets: &Vec<&Vec<DiscreteLine>>, height: &fsize, resolution: &fsize, amount: &isize, item_id: &usize) -> Vec<(Transformation, usize)>{
+        if !is_x86_feature_detected!("avx2"){       
+            unsafe {return self.check_polygon_avx2(polygon_sets, height, resolution, amount, item_id);}
+        } else{   
+            return self.check_polygon_scalar(polygon_sets, height, resolution, amount, item_id);
+        }
+    }
+
+    #[target_feature(enable = "avx2")]
+    unsafe fn check_polygon_avx2(&mut self, polygon_sets: &Vec<&Vec<DiscreteLine>>, height: &fsize, resolution: &fsize, amount: &isize,  item_id: &usize) -> Vec<(Transformation, usize)>{
+        return self.check_polygon_scalar(polygon_sets, height, resolution, amount, item_id);
+    }
+
+    #[inline(always)]
+    fn check_polygon_scalar(&mut self, polygon_sets: &Vec<&Vec<DiscreteLine>>, height: &fsize, resolution: &fsize, amount: &isize, item_id: &usize) -> Vec<(Transformation, usize)>{
+        let mut results: Vec<(Transformation, usize)> = Vec::with_capacity(*amount as usize);
+        let start_time = Instant::now();
+    
+        let mut placed = *amount;
+        let mut start_x = 0;
+        let mut start_offshoot = 0.0;
+
+        while placed > 0 {
+            let placing_time = Instant::now();
+            let mut best_placement = None;
+            // Process each set of segments
+            for (i,polygon) in polygon_sets.iter().enumerate(){
+                let placement = self.find_best_position(polygon, height, start_x, start_offshoot, &i);
+                match best_placement {
+                    None => {
+                        best_placement = placement;
+                    },
+                    Some((best_i0, best_offshoot, best_set_index)) => {
+                        let tentative = placement.unwrap();
+                        
+                        // Compare based on line index, then offshoot, then empty space
+                        if tentative.0 < best_i0 || 
+                        (tentative.0 == best_i0 && tentative.1 < best_offshoot) ||
+                        (tentative.0 == best_i0 && tentative.1 == best_offshoot && polygon_sets[tentative.2].first().unwrap().space() < polygon_sets[best_set_index].first().unwrap().space()) {
+                            best_placement = placement;
                         }
-                        final_offshot = offshoot + stack[0];
-                        stack.pop();                       
-                    }     
-                    log::info!("Fitting at {:?}, the segments {:?}, with offshot {:?}", i0, segments, final_offshot);
-                    self.add_segments(segments, final_offshot, i0);
-                    log::info!("Fitting success {:?}", self);
-                    return Some(Transformation::from_translation((i0 as f32 * resolution, height - final_offshot)));
+                    }
                 }
             }
-        log::info!("Fitting failed");
-        None
+            if let Some((best_i0, best_offshoot, best_set_index)) = best_placement {
+                // Apply the selected placement
+                let selected_segments = polygon_sets[best_set_index];
+                self.add_segments(selected_segments, best_offshoot, best_i0);
+                start_x = best_i0;
+                start_offshoot = best_offshoot;
+                placed = placed - 1;
+                //println!("placing item {} {} took {:?} ",item_id ,placed , placing_time.elapsed());
+                results.push((Transformation::from_translation((best_i0 as fsize * resolution, height - best_offshoot)), best_set_index));
+            } else{
+                println!("ERROR");
+                break;
+            }
+        }
+        //println!("checking took {:?} ", start_time.elapsed());
+        results
     }
 
-    pub fn add_segments(&mut self, segments: Vec<DiscreteLine>, offshoot: f32, firstline: usize) {
+    #[inline(always)]
+    fn find_best_position(&self, polygon: &Vec<DiscreteLine>, height: &fsize, start_x: usize, start_offshoot: fsize, set_index: &usize) ->  Option<(usize, fsize, usize)>{
+        // Skip empty segment sets
+        let mut initial_offshoot = start_offshoot;
+    
+        let first: &DiscreteLine = &polygon[0];
+        
+        // Try each available line starting from start_x
+        for line_idx in start_x..self.lines.len() {
+            let line = &self.lines[line_idx];
+            
+            // Check if we can fit the first segment at this line
+            if let Some(offshoot_shift) = line.check_at(height, first, &initial_offshoot) {
+                let offshoot = initial_offshoot + offshoot_shift;
+                
+                // Now verify if all segments fit
+                if let Some(final_offshoot) = self.verify_all_segments(polygon, height, line_idx, offshoot) {
+                    return Some((line_idx, final_offshoot, *set_index));
+                }
+            }
+            
+            // Reset offshoot for next line
+            initial_offshoot = 0.0;
+        }
+        None
+    }
+    
+    #[inline(always)]
+    fn verify_all_segments(&self, polygon: &Vec<DiscreteLine>, height: &fsize, i0: usize, offshoot: fsize) -> Option<f32> {
+        let mut current_offshoot = offshoot;
+        
+        'outer: loop {    
+            let mut all_fit = true;
+            for (i, segment) in polygon.iter().enumerate() {                
+                // Check if segment fits at current line and offshoot
+                match self.lines[i0 + i].check_at(height, segment, &current_offshoot) {
+                    None => return None, // Segment doesn't fit
+                    Some(shift) => {
+                        if shift > EPSILON {
+                            // Need to shift and retry all segments
+                            current_offshoot += shift;
+                            all_fit = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if all_fit {
+                return Some(current_offshoot);
+            }
+
+            if current_offshoot > *height {
+                return None;
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub fn add_segments(&mut self, segments: &Vec<DiscreteLine>, offshoot: fsize, firstline: usize) {
         for (j, segment) in segments.iter().enumerate() {
             if let Some(line) = self.lines.get_mut(firstline + j) {
                 // Process each interval from the segment
@@ -194,91 +337,35 @@ impl DiscreteStrip {
                         start: interval.start + offshoot,
                         end: interval.end + offshoot,
                         orientation: interval.orientation,
+                        total_space: interval.total_space,
                     };
-                    
-                    // Check if we need to split any existing intervals
-                    let mut split_operations = Vec::new();
-                    
-                    for i in 0..line.occupied.len() {
-                        let existing = &line.occupied[i];
-                        
-                        // Check for overlap
-                        if existing.start <= new_interval.end && existing.end >= new_interval.start {
-                            // If orientations are different and both are Some, we need to split
-                            if let (Some(exist_orient), Some(new_orient)) = (existing.orientation, new_interval.orientation) {
-                                if exist_orient != new_orient {
-                                    // Record split operation for later execution
-                                    split_operations.push((i, new_interval.start.max(existing.start), new_interval.end.min(existing.end)));
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Execute splits (in reverse to keep indices valid)
-                    for (i, split_start, split_end) in split_operations.iter().rev() {
-                        let existing = line.occupied.remove(*i);
-                        
-                        // Add parts before split
-                        if existing.start < *split_start {
-                            line.occupied.push(Interval {
-                                start: existing.start,
-                                end: *split_start,
-                                orientation: existing.orientation,
-                            });
-                        }
-                        
-                        // Add split part with new orientation
-                        line.occupied.push(Interval {
-                            start: *split_start,
-                            end: *split_end,
-                            orientation: new_interval.orientation,
-                        });
-                        
-                        // Add parts after split
-                        if existing.end > *split_end {
-                            line.occupied.push(Interval {
-                                start: *split_end,
-                                end: existing.end,
-                                orientation: existing.orientation,
-                            });
-                        }
-                    }
-                    
-                    // If no splits were made, try to extend an existing interval or add as new
-                    if split_operations.is_empty() {
-                        let mut merged = false;
-                        
-                        // Try extending existing intervals
-                        for i in 0..line.occupied.len() {
-                            let existing = &mut line.occupied[i];
-                            
-                            // Check if they can be merged (same orientation and touching)
-                            if existing.orientation == new_interval.orientation {
-                                if existing.end == new_interval.start {
-                                    // Existing ends where new starts - extend end
-                                    existing.end = new_interval.end;
-                                    merged = true;
-                                    break;
-                                } else if existing.start == new_interval.end {
-                                    // Existing starts where new ends - extend start
-                                    existing.start = new_interval.start;
-                                    merged = true;
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        // If not merged with any existing interval, add as new
-                        if !merged {
-                            line.occupied.push(new_interval);
-                        }
-                    }
-                }
+    
+                    line.add_interval(new_interval);
                 
-                // Sort by start position
-                line.occupied.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+                }
             }
         }
     }  
-}
 
+    pub fn trim_after_last_occupied(&mut self) {
+        // Find the index of the last line with non-empty occupied list
+        let last_occupied_index = self.lines.iter()
+            .enumerate()
+            .rfind(|(_, line)| !line.occupied.is_empty())
+            .map(|(index, _)| index);
+        
+        if let Some(index) = last_occupied_index {
+            // Keep only up to and including the last occupied line
+            self.lines.truncate(index + 1);
+        }
+        // If no occupied lines are found, keep all lines as they are
+    }
+
+
+
+    // unsafe fn check_simd(&self, polygon: &Vec<DiscreteLine>, height: &fsize, start_x: usize, start_offshoot: fsize, segment_heights: &fsize, set_index: &usize) ->  Option<(usize, fsize, usize)>{
+        
+    //     type SimdType = __m512;
+    //     todo!()
+    // }
+}

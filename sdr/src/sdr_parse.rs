@@ -21,7 +21,6 @@ use ordered_float::OrderedFloat;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
-use std::sync::{Arc, Mutex};
 use dashmap::DashMap;
 
 use crate::discrete_item::Discretizable;
@@ -34,19 +33,19 @@ pub struct SdrParse {
     center_polygons: bool,
 }
 
-#[derive(Hash, Eq, PartialEq, Debug)]
+#[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
 pub struct ItemDiscrete{
-    id: usize,
-    rotation: OrderedFloat<fsize>,
+    pub id: usize,
+    pub rotation: OrderedFloat<fsize>,
 }
 
 impl ItemDiscrete{
-    fn new(id: &usize, rotation: &fsize) -> ItemDiscrete{
+    pub fn new(id: &usize, rotation: &fsize) -> ItemDiscrete{
         ItemDiscrete { id: *id, rotation: OrderedFloat(*rotation) }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct SdrInstance{
     pub instance: Instance,
     pub items: HashMap<ItemDiscrete, Vec<DiscreteLine>>,
@@ -54,7 +53,7 @@ pub struct SdrInstance{
 
 impl SdrInstance{
     fn new<'a>(instance: Instance, it: Vec<(Item,usize)>, resolution: fsize) -> SdrInstance {
-        let mut items = DashMap::new();
+        let items: DashMap<ItemDiscrete, Vec<DiscreteLine>> = DashMap::new();
 
         let start_time = Instant::now();
         // Iterate through each item in the instance
@@ -75,8 +74,10 @@ impl SdrInstance{
                     items.insert(item_discrete, discrete_lines);
                 },
             }
+
         });
-        log::info!("Total parallelized processing time: {:?}", start_time.elapsed());
+        println!("Total discretization processing time: {:?}", start_time.elapsed());
+
         let items: HashMap<_, _> = items.into_iter().collect();
         
         SdrInstance {
@@ -123,7 +124,7 @@ impl SdrParse{
         sdr_ins
     }
 
-    fn parse_item(&self, json_item: &JsonItem, item_id: usize) -> (Item, usize) {
+    pub fn parse_item(&self, json_item: &JsonItem, item_id: usize) -> (Item, usize) {
         let shape = match &json_item.shape {
             JsonShape::Rectangle { width, height } => {
                 SimplePolygon::from(AARectangle::new(0.0, 0.0, *width, *height))

@@ -1,31 +1,32 @@
 #[cfg(test)]
 mod test_placement {
     use jagua_rs::entities::instances::instance_generic::InstanceGeneric;
+    use jagua_rs::fsize;
     use jagua_rs::geometry::geo_traits::Transformable;
-    use jagua_rs::geometry::transformation::Transformation;
-    use jagua_rs::io::parser::Parser;
     use sdr::io::svg_export::simple_polygon_data;
     use sdr::sdr_config::SDRConfig;
     use sdr::sdr_parse::SdrParse;
     use test_case::test_case;
     use sdr::discrete_item::Discretizable;
-    use sdr::{discrete_line, io};
+    use sdr::io;
     use svg::node::element::{Path, Line};
     use svg::Document;
     use std::fs::File;
     use std::io::Write;
     use std::path::Path as OtherPath;
     use jagua_rs::util::polygon_simplification::PolySimplConfig;
-    use std::time::{Instant, Duration};
     use simplelog::{Config, LevelFilter, WriteLogger};
     use chrono::{DateTime, Local};
 
-    #[test_case("../assets/shirt2.json", 1.0; "shirt2")]
-    #[test_case("../assets/swim.json", 50.0; "swim")]
-    #[test_case("../assets/shirts.json", 1.1; "shirtsd")]
-    #[test_case("../assets/trousers.json", 0.2; "trousers")]
+    #[test_case("../assets/shirt2.json", 2.0; "shirt2")]
+    #[test_case("../assets/swim.json", 36.0; "swim")]
+    #[test_case("../assets/shirts.json", 1.0; "shirts")]
+    #[test_case("../assets/shirtest.json", 1.0; "shirtest")]
+    #[test_case("../assets/trousers.json", 1.0; "trousers")]
     #[test_case("../assets/mao.json", 50.0; "mao")]
-    fn test_placement(instance_path: &str, resolution: f32) {
+    #[test_case("../assets/albano.json", 36.0; "albano")]
+    
+    fn test_placement(instance_path: &str, resolution: fsize) {
         // Get current timestamp
         let now: DateTime<Local> = Local::now();
         let timestamp = now.format("%Y-%m-%d_%H-%M-%S").to_string();
@@ -51,7 +52,6 @@ mod test_placement {
             let rotated_shape = item.0.shape.transform_clone(&item.0.move_to_first_quadrant(3.1415927));
             let discretized_shape = item.0.discretize_shape(resolution, 0.0);
             let rotatedd_shape = item.0.discretize_shape(resolution, 3.1415927);
-            log::info!("item segments: {:?}", discretized_shape);
             let polygon_data = simple_polygon_data(&moved_shape);
             let rotated_data = simple_polygon_data(&rotated_shape);
             // Obtain the bounding box from the polygon's shape
@@ -110,12 +110,12 @@ mod test_placement {
                 .set("height", 600)
                 .add(rotated_path);
 
-            for segments in discretized_shape {
-                for occupied in segments.occupied {
+            for segments in discretized_shape.iter().enumerate() {
+                for occupied in &segments.1.occupied {
                     let line = Line::new()
-                        .set("x1", segments.id as f32 * resolution)
+                        .set("x1", segments.0 as fsize * resolution)
                         .set("y1", -occupied.start)
-                        .set("x2", segments.id as f32 * resolution)
+                        .set("x2", segments.0 as fsize * resolution)
                         .set("y2", -occupied.end)
                         .set("stroke", "red")
                         .set("stroke-width", 0.05);
@@ -123,12 +123,12 @@ mod test_placement {
                 }
             }
 
-            for segments in rotatedd_shape {
-                for occupied in segments.occupied {
+            for segments in rotatedd_shape.iter().enumerate() {
+                for occupied in &segments.1.occupied {
                     let line = Line::new()
-                        .set("x1", segments.id as f32 * resolution)
+                        .set("x1", segments.0 as fsize * resolution)
                         .set("y1", -occupied.start)
-                        .set("x2", segments.id as f32 * resolution)
+                        .set("x2", segments.0 as fsize * resolution)
                         .set("y2", -occupied.end)
                         .set("stroke", "red")
                         .set("stroke-width", 0.05);
